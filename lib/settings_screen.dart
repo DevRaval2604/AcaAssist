@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_svg/flutter_svg.dart'; // Import flutter_svg package
-import 'login_screen.dart';
 import 'profile_screen.dart';
+import 'verify_password_screen.dart';
 import 'home_screen.dart'; // Import HomeScreen
 import 'change_password_screen.dart'; // Import ChangePasswordScreen
 import 'set_password_screen.dart'; // Import SetPasswordScreen
@@ -30,7 +30,6 @@ class SettingsScreenState extends State<SettingsScreen> {
   String name = ""; // Variable to store the user's name
   String initials = ""; // Variable to store the user's initials
   bool isNotificationsEnabled = false; // Toggle to track notification setting
-  bool _isLoading = false; // Flag to show/hide loading indicator
 
   @override
   void initState() {
@@ -109,92 +108,33 @@ class SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // Function to show alert before deleting the account
-  void _confirmDeleteAccount() {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: SettingsScreen.backgroundColor, // Set background color
-          title: Text(
-            'Delete Account',
-            style: TextStyle(
-              color: SettingsScreen.textColor, // Set title text color
-            ),
-          ),
-          content: Text(
-            'Are you sure you want to delete your account? This action cannot be undone.',
-            style: TextStyle(
-              color: SettingsScreen.textColor, // Set content text color
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context); // Close the dialog
-              },
-              child: Text(
-                'No',
-                style: TextStyle(
-                  color: SettingsScreen.textColor, // Set button text color
-                ),
-              ),
-            ),
-            TextButton(
-              onPressed: () async {
-                Navigator.pop(context); // Close the dialog
-                setState(() {
-                  _isLoading = true; // Show loading spinner on the page
-                });
-                await _deleteAccount();
-              },
-              child: Text(
-                'Yes',
-                style: TextStyle(
-                  color: SettingsScreen.textColor, // Set button text color
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
+  void _confirmDeleteAccount() async {
+    final user = FirebaseAuth.instance.currentUser;
+    final providers = user?.providerData;
+    final hasPassword = providers?.any((p) => p.providerId == 'password') ?? false;
 
-  // Function to delete the account
-  Future<void> _deleteAccount() async {
-    try {
-      User? user = FirebaseAuth.instance.currentUser;
-      if (user != null) {
-        // Delete user data from Firestore
-        await FirebaseFirestore.instance.collection('Users').doc(user.uid).delete();
-        await user.delete(); // Delete the current user's account
-        await FirebaseAuth.instance.signOut(); // Sign out the user after account deletion
-        if (mounted) {
-          setState(() {
-            _isLoading = false; // Hide the loader once deletion is complete
-          });
+    if (!mounted) return;
 
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Account successfully deleted.'),
-            backgroundColor: SettingsScreen.primaryColor,
-          ));
-          Navigator.of(context).pushAndRemoveUntil(
-            MaterialPageRoute(builder: (context) => LoginScreen()), // Navigate to login screen
-                (route) => false, // Removes all previous routes
-          );
-        }
-      }
-    } catch (e) {
-      setState(() {
-        _isLoading = false; // Hide the loader on error
-      });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Error deleting account.'),
-            backgroundColor: SettingsScreen.primaryColor));
-      }
+    if (hasPassword) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const VerifyPasswordScreen(),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Please set a password first to delete your account.'),
+          backgroundColor: SettingsScreen.primaryColor,
+        ),
+      );
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const SetPasswordScreen(),
+        ),
+      );
     }
   }
 
@@ -351,17 +291,6 @@ class SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
-
-          // Opacity layer while loading
-          if (_isLoading)
-            Positioned.fill(
-              child: Container(
-                color: Color.fromRGBO(0, 0, 0, 0.5), // Semi-transparent black overlay
-                child: Center(
-                  child: CircularProgressIndicator(color: SettingsScreen.textColor),
-                ),
-              ),
-            ),
         ],
       ),
       bottomNavigationBar: BottomAppBar(
