@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/foundation.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 
 class RecommendResourcesScreen extends StatefulWidget {
@@ -77,111 +78,106 @@ class RecommendResourcesScreenState extends State<RecommendResourcesScreen> {
 
   Future<List<String>> _fetchResourcesFromAPI(String subject, String topic) async {
     List<String> resources = [];
-
     String youtubeApiKey = Secrets.youtubeApiKey;
-    String youtubeApiUrl = '';
+    String youtubeSearchUrl = '';
     String query = Uri.encodeComponent(subject);
 
     if (topic.isNotEmpty) {
       query += " ${Uri.encodeComponent(topic)}";
     }
 
-    // If topic is specified, search for YouTube videos
+    // Determine search type based on topic presence
     if (topic.isNotEmpty) {
-      youtubeApiUrl =
-      "https://www.googleapis.com/youtube/v3/search?part=snippet&q=$query&type=video&order=viewCount&key=$youtubeApiKey";
+      youtubeSearchUrl =
+      "https://www.googleapis.com/youtube/v3/search?part=id&q=$query&type=video&order=relevance&key=$youtubeApiKey";
     } else {
-      // If no topic, search for YouTube channels
-      youtubeApiUrl =
-      "https://www.googleapis.com/youtube/v3/search?part=snippet&q=$query&type=channel&order=relevance&key=$youtubeApiKey";
+      youtubeSearchUrl =
+      "https://www.googleapis.com/youtube/v3/search?part=id&q=$query&type=channel&order=relevance&key=$youtubeApiKey";
     }
 
     try {
-      // Send the API request to YouTube
-      final response = await http.get(Uri.parse(youtubeApiUrl)).timeout(Duration(seconds: 15));
+      final searchResponse = await http.get(Uri.parse(youtubeSearchUrl)).timeout(Duration(seconds: 15));
 
-      if (response.statusCode == 200) {
-        // Parse the response body
-        Map<String, dynamic> data = jsonDecode(response.body);
-
-        if (data.containsKey('items') && data['items'] is List) {
-          List<dynamic> items = data['items'];
+      if (searchResponse.statusCode == 200) {
+        Map<String, dynamic> searchData = jsonDecode(searchResponse.body);
+        if (searchData.containsKey('items') && searchData['items'] is List) {
+          List<dynamic> items = searchData['items'];
+          List<String> ids = [];
 
           if (topic.isNotEmpty) {
-            // If topic is specified, fetch videos and sort by view count
-            items.sort((a, b) {
-              // Safely get the viewCount for both items, default to 0 if not available
-              int viewsA = 0;
-              int viewsB = 0;
-
-              // Check if the 'statistics' and 'viewCount' fields are present
-              if (a['statistics'] != null && a['statistics']['viewCount'] != null) {
-                viewsA = int.tryParse(a['statistics']['viewCount'] ?? '0') ?? 0;
-              }
-
-              if (b['statistics'] != null && b['statistics']['viewCount'] != null) {
-                viewsB = int.tryParse(b['statistics']['viewCount'] ?? '0') ?? 0;
-              }
-
-              return viewsB.compareTo(viewsA); // Sort descending by views
-            });
-
-            // Extract video links and add to the resources list (only 5 YouTube videos)
-            for (var item in items.take(5)) {
+            for (var item in items) {
               if (item['id'] != null && item['id']['videoId'] != null) {
-                String videoUrl = "https://www.youtube.com/watch?v=${item['id']['videoId']}";
-                resources.add(videoUrl);
+                ids.add(item['id']['videoId']);
               }
             }
           } else {
-            // If no topic, fetch channels and sort by views (not subscriber count)
-            List<String> channelIds = [];
             for (var item in items) {
-              if (item['snippet'] != null && item['snippet']['channelId'] != null) {
-                channelIds.add(item['snippet']['channelId']);
+              if (item['id'] != null && item['id']['channelId'] != null) {
+                ids.add(item['id']['channelId']);
               }
             }
+          }
 
-            // Fetch channel details (like view count) using the channels API
-            if (channelIds.isNotEmpty) {
-              final channelResponse = await http.get(
-                Uri.parse(
-                    "https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${channelIds.join(',')}&key=$youtubeApiKey"),
-              );
+          if (ids.isNotEmpty) {
+            String idString = ids.join(',');
 
-              if (channelResponse.statusCode == 200) {
-                Map<String, dynamic> channelData = jsonDecode(channelResponse.body);
-                List<dynamic> channelItems = channelData['items'];
+            // New logic to get video details and filter by privacy status
+            if (topic.isNotEmpty) {
+              final videoDetailsUrl = "https://www.googleapis.com/youtube/v3/videos?part=status,statistics&id=$idString&key=$youtubeApiKey";
+              final videoDetailsResponse = await http.get(Uri.parse(videoDetailsUrl));
 
-                // Sort the channels based on view count
+              if (videoDetailsResponse.statusCode == 200) {
+                Map<String, dynamic> videoDetailsData = jsonDecode(videoDetailsResponse.body);
+                List<dynamic> videoItems = videoDetailsData['items'];
+
+                // Sort by view count in descending order
+                videoItems.sort((a, b) {
+                  int viewsA = int.tryParse(a['statistics']['viewCount'] ?? '0') ?? 0;
+                  int viewsB = int.tryParse(b['statistics']['viewCount'] ?? '0') ?? 0;
+                  return viewsB.compareTo(viewsA);
+                });
+
+                for (var videoItem in videoItems.take(5)) {
+                  String privacyStatus = videoItem['status']['privacyStatus'];
+                  if (privacyStatus == 'public') {
+                    String videoUrl = "https://www.youtube.com/watch?v=${videoItem['id']}";
+                    resources.add(videoUrl);
+                  }
+                }
+              }
+            } else {
+              // New logic for channels - check if channel exists and get view count
+              final channelDetailsUrl = "https://www.googleapis.com/youtube/v3/channels?part=statistics&id=$idString&key=$youtubeApiKey";
+              final channelDetailsResponse = await http.get(Uri.parse(channelDetailsUrl));
+
+              if (channelDetailsResponse.statusCode == 200) {
+                Map<String, dynamic> channelDetailsData = jsonDecode(channelDetailsResponse.body);
+                List<dynamic> channelItems = channelDetailsData['items'];
+
+                // Sort by view count in descending order
                 channelItems.sort((a, b) {
                   int viewsA = int.tryParse(a['statistics']['viewCount'] ?? '0') ?? 0;
                   int viewsB = int.tryParse(b['statistics']['viewCount'] ?? '0') ?? 0;
-                  return viewsB.compareTo(viewsA); // Sort descending by view count
+                  return viewsB.compareTo(viewsA);
                 });
 
-                // Extract channel links and add to the resources list (only 5 YouTube channels)
-                for (var item in channelItems.take(5)) {
-                  if (item['snippet'] != null && item['snippet']['channelId'] != null) {
-                    String channelUrl = "https://www.youtube.com/channel/${item['snippet']['channelId']}";
-                    resources.add(channelUrl);
-                  }
+                for (var channelItem in channelItems.take(5)) {
+                  String channelUrl = "https://www.youtube.com/channel/${channelItem['id']}";
+                  resources.add(channelUrl);
                 }
               }
             }
           }
         }
       } else {
-        // Show error snackbar if the API call fails
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Failed to load YouTube data. Status code: ${response.statusCode}'),
+            content: Text('Failed to load YouTube data. Status code: ${searchResponse.statusCode}'),
             backgroundColor: RecommendResourcesScreen.primaryColor,
           ));
         }
       }
     } catch (e) {
-      // Show error snackbar in case of exceptions (e.g., network issues, timeout)
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Error fetching YouTube data: $e'),
@@ -202,10 +198,9 @@ class RecommendResourcesScreenState extends State<RecommendResourcesScreen> {
     prompt += "\nPlease ensure the links provided are active and the resources are available.";
     prompt += "\nPlease return the links in a numbered list format with their corresponding names.";
 
-    // Use your Generative API model to get AI-generated resources
     final model = GenerativeModel(
       model: 'gemini-2.0-flash',
-      apiKey: Secrets.aiApiKey,  // Replace with your actual API key
+      apiKey: Secrets.aiApiKey,
       generationConfig: GenerationConfig(
         temperature: 0.7,
         topK: 40,
@@ -219,21 +214,46 @@ class RecommendResourcesScreenState extends State<RecommendResourcesScreen> {
     final content = Content.text(prompt);
     final responseAI = await chat.sendMessage(content);
 
-    // Parse the AI-generated response and extract links
+    void log(String message) {
+      if (kDebugMode) {
+        print(message);
+      }
+    }
+
     String resourcesText = responseAI.text?.trim() ?? '';
     if (resourcesText.isNotEmpty) {
       List<String> aiResources = _parseResources(resourcesText);
-      resources.addAll(aiResources);
+
+      // New logic to filter and validate website links
+      List<String> verifiedWebsites = [];
+      for (String resource in aiResources) {
+        // Only check websites, YouTube links are handled above
+        if (!resource.contains("youtube.com") && !resource.contains("youtu.be")) {
+          try {
+            final RegExp urlRegex = RegExp(r'(https?://\S+)');
+            final extractedUrl = urlRegex.firstMatch(resource)?.group(0);
+
+            if (extractedUrl != null) {
+              final uri = Uri.parse(extractedUrl);
+              final response = await http.head(uri).timeout(Duration(seconds: 5));
+              // Check for a 200 OK status code. You can add other success codes if needed.
+              if (response.statusCode == 200) {
+                verifiedWebsites.add(resource);
+              }
+            }
+          } catch (e) {
+            // Ignore resources that fail the check (e.g., network issues, invalid URL)
+            log('Skipping resource due to error: $e');
+          }
+        }
+      }
+      resources.addAll(verifiedWebsites);
     }
 
-    // Limit the total resources to 10 (5 YouTube links and 5 websites)
-    List<String> youtubeLinks = resources.where((link) => link.contains("youtube.com")).take(5).toList();
-    List<String> websiteLinks = resources.where((link) => !link.contains("youtube.com")).take(5).toList();
-
-    // Combine both lists to get a total of 10 resources
-    resources.clear();
-    resources.addAll(youtubeLinks);
-    resources.addAll(websiteLinks);
+    // Limit the total resources to 10 if you want
+    if (resources.length > 10) {
+      return resources.take(10).toList();
+    }
 
     return resources;
   }
